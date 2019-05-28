@@ -39,6 +39,7 @@ class Learner():
         #   Creating the RAM
         #   ================
         self.ram = RAM(PARAMETERS, sess)
+        self.logger.info("Trainable Weights: {}".format(sess.run(self.ram.all_trainable_vars)))
 
         #   =====================
         #   Define some variables
@@ -170,7 +171,7 @@ class Learner():
         location_save_mu_std_a = defaultdict(list)
         location_save_mu_x_a = defaultdict(list)
 
-        accumulated_glance_reward_list = defaultdict(list)
+        accumulated_glance_reward_list = np.zeros(self.glances)
         glance_reward_list = defaultdict(list)
         glance_actions = np.zeros((self.glances, self.batch_size, self.num_objects))
         reward_list = []
@@ -230,9 +231,10 @@ class Learner():
                     loc_x, loc_a, mean_x, mean_a, std_x, std_a, glance_reward, glance_action, \
                     state_1 = self.session.run(feed_dict=feed_dict, fetches=fetches)
 
-                    for obj in range(self.num_objects):
-                        glance_actions[g][index][obj] = glance_action[0][obj]
-                    glance_reward_list[g].append(glance_reward)
+                    # Computing the reward when using the accumulated accuracy of the previous glances
+                    accumulated_glance_reward_list[g] += np.equal(
+                        np.argmax(np.mean(glance_actions, axis=0), axis=-1), x).astype(float)
+
 
                 reward_list.append(glance_reward)
 
@@ -240,19 +242,14 @@ class Learner():
                 location_save_mu_x_a[x].extend(np.concatenate([mean_x_old,mean_a_old], axis=-1))
                 location_save_mu_std_x[x].extend(np.concatenate([mean_x_old,std_x_old], axis=-1))
                 location_save_mu_std_a[x].extend(np.concatenate([mean_a_old,std_a_old], axis=-1))
-            for g in range(self.glances):
-                accumulated_guess = np.mean(
-                    np.equal(
-                        np.argmax(np.mean(glance_actions[g], axis=0), axis=-1), X).astype(float)
-                )
-                accumulated_glance_reward_list[g].append(accumulated_guess)
 
         reward_sum_sqrt = np.sum(np.square(reward_list))
         num_data = len(reward_list)
         accuracy = np.mean(reward_list)
         accuracy_std = np.sqrt(((reward_sum_sqrt/num_data) - accuracy**2)/num_data)
 
-        return accuracy, accuracy_std, glance_reward_list, accumulated_glance_reward_list, location_save, \
+        return accuracy, accuracy_std, glance_reward_list, \
+               accumulated_glance_reward_list/float(self.batch_size*num_test_batches), location_save, \
                 location_save_mu_x_a, location_save_mu_std_x, location_save_mu_std_a
 
     def train(self):
@@ -261,7 +258,6 @@ class Learner():
         :return: Mean reward, predicted labels, accumulated loss, REINFORCE mean, REINFORCE std, baseline loss,
         list of reward per glance, list of accumulated reward per glance
         """
-        glance_actions = np.zeros((self.glances, self.batch_size, self.num_objects))
         # store glance reward for evaluation
         reward_list = np.zeros((self.glances, self.batch_size))
         accumulated_reward_list = []
@@ -287,6 +283,7 @@ class Learner():
                        self.ram.initial_std_x, self.ram.initial_std_a, self.ram.init_state_1]
             loc_x, loc_a, mean_x, mean_a, std_x, std_a, state_1 = self.session.run(fetches=fetches)
 
+            glance_actions = []
             # Swipes
             for g in range(self.glances):
                 # Foreward Pass
@@ -344,9 +341,11 @@ class Learner():
                 state_1, cost_a_fetched, cost_l_fetched, cost_s_fetched, \
                 cost_b_fetched, reward_fetched, prediction_labels_fetched, _ \
                     = self.session.run(feed_dict=feed_dict, fetches=fetches)
-                for obj in range(self.num_objects):
-                    glance_actions[g][index][obj] = prediction_labels_fetched[0][obj]
                 reward_list[g][index] = reward_fetched
+                glance_actions.append(prediction_labels_fetched[0])
+                # Computing the reward when using the accumulated accuracy of the previous glances
+                accumulated_reward_list[g] += np.equal(
+                    np.argmax(np.mean(glance_actions, axis=0), axis=-1), x).astype(float)
 
             # Save the data of the current batch
             batch_reward.append(reward_fetched)
@@ -358,16 +357,8 @@ class Learner():
         # Here, the action training happens by applying the gradients
         self.session.run(self.ram.apply_grads, feed_dict={self.ram.learning_rate: self.lr})
 
-        # Computing the reward when using the accumulated accuracy of the previous glances
-        for g in range(self.glances):
-            accumulated_guess = np.mean(
-                np.equal(
-                    np.argmax(np.mean(glance_actions[g], axis=0), axis=-1), X).astype(float)
-            )
-            accumulated_reward_list.append(accumulated_guess)
-
         return batch_reward, batch_predicted_labels, batch_cost_a, batch_cost_l, batch_cost_s, \
-               batch_cost_b, reward_list, accumulated_reward_list
+               batch_cost_b, reward_list, accumulated_reward_list/float(self.batch_size)
 
     def get_pressure(self, pos, eul, obj_id):
         """

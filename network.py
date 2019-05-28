@@ -100,6 +100,10 @@ class RAM():
             # Train
             self.train(all_grads, scope)
 
+            # Compute number of trainable variables
+            self.all_trainable_vars = tensorflow.reduce_sum(
+                    [tensorflow.reduce_prod(v.shape) for v in tensorflow.trainable_variables()])
+
 
     def train(self, all_grads, scope):
         """
