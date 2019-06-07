@@ -118,7 +118,7 @@ class Experiment():
                     # --> Only the data of the last glance is used
                     # And create some heatmaps for visualization
                     if PARAMETERS.SAVE_SENSOR_POLICY and not PARAMETERS.RANDOM_LOCS:
-                        policy_save = h5py.File(file_path, 'w')
+                        policy_save = h5py.File(file_path, 'a')
                         for o in range(PARAMETERS.OBJECT_NUM):
                             # Save the data
                             policy_save.create_dataset("object_" + str(o) + "/sampled_locations/" + str(steps), data=performance_locations[o])
