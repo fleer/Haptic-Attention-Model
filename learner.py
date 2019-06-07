@@ -173,10 +173,9 @@ class Learner():
 
         accumulated_glance_reward_list = np.zeros(self.glances)
         glance_reward_list = defaultdict(list)
-        glance_actions = np.zeros((self.glances, self.batch_size, self.num_objects))
         reward_list = []
 
-        num_test_batches = 10
+        num_test_batches = 100
 
         if self.gazebo == True:
             num_test_batches = 10
@@ -194,6 +193,7 @@ class Learner():
                            self.ram.initial_std_x, self.ram.initial_std_a, self.ram.init_state_1]
                 loc_x, loc_a, mean_x, mean_a, std_x, std_a, state_1 = self.session.run(fetches=fetches)
 
+                glance_actions = []
                 # Swipes
                 for g in range(self.glances):
                     # Foreward Pass
@@ -231,6 +231,7 @@ class Learner():
                     loc_x, loc_a, mean_x, mean_a, std_x, std_a, glance_reward, glance_action, \
                     state_1 = self.session.run(feed_dict=feed_dict, fetches=fetches)
 
+                    glance_actions.append(glance_action)
                     # Computing the reward when using the accumulated accuracy of the previous glances
                     accumulated_glance_reward_list[g] += np.equal(
                         np.argmax(np.mean(glance_actions, axis=0), axis=-1), x).astype(float)
@@ -260,7 +261,7 @@ class Learner():
         """
         # store glance reward for evaluation
         reward_list = np.zeros((self.glances, self.batch_size))
-        accumulated_reward_list = []
+        accumulated_reward_list = np.zeros(self.glances)
         batch_reward = []
         batch_predicted_labels = []
         batch_cost_a = []
@@ -342,10 +343,12 @@ class Learner():
                 cost_b_fetched, reward_fetched, prediction_labels_fetched, _ \
                     = self.session.run(feed_dict=feed_dict, fetches=fetches)
                 reward_list[g][index] = reward_fetched
+
                 glance_actions.append(prediction_labels_fetched[0])
                 # Computing the reward when using the accumulated accuracy of the previous glances
                 accumulated_reward_list[g] += np.equal(
-                    np.argmax(np.mean(glance_actions, axis=0), axis=-1), x).astype(float)
+                        np.argmax(np.mean(glance_actions, axis=0), axis=-1), x).astype(float)
+
 
             # Save the data of the current batch
             batch_reward.append(reward_fetched)
