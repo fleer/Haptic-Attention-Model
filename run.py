@@ -112,7 +112,7 @@ def main():
     parser.add_argument('--random', type=bool, default=False, help='Use a randomly generated sensor policy')
     parser.add_argument('--core', type=str, default='LSTM', help='Which kind of core unit should be used? LSTM or MLP')
     args = parser.parse_args()
-    print("Training ID: {}\nNumber of Glances: {}".format(args.id, args.glances))
+    print("Training ID: {}\nNumber of Glances: {}\nCore Module: {}".format(args.id, args.glances, args.core))
     params = PARAMETERS
     params.GLANCES = args.glances
     params.SAVE_SENSOR_POLICY = args.sensor_policy

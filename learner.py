@@ -232,6 +232,7 @@ class Learner():
                     state_1 = self.session.run(feed_dict=feed_dict, fetches=fetches)
 
                     glance_actions.append(glance_action)
+                    glance_reward_list[g].append(glance_reward)
                     # Computing the reward when using the accumulated accuracy of the previous glances
                     accumulated_glance_reward_list[g] += np.equal(
                         np.argmax(np.mean(glance_actions, axis=0), axis=-1), x).astype(float)
