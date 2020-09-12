@@ -1,74 +1,191 @@
-import os
-
-import numpy as np
+# coding=utf-8
+# In order to use tf.print
+from __future__ import print_function
 import tensorflow as tf
 
-class AttentionControl(tf.keras.layers.Layer):
+class RAM(tf.keras.Model):
     """
-    Loop function of recurrent attention network
-    :return: next glance
+    Neural Network class that uses Tensorflow to build and train the Haptic Attention Model
     """
+
+
     def __init__(self, PARAMETERS):
-        super(AttentionControl, self).__init__()
+        """
+        Intialize parameters, determine the learning rate decay and build the RAM
+        :param PARAMETERS: The Class with the used parameters
+        :param session: The tensorflow session
+        """
+
+        super(RAM, self).__init__()
+
+        # number of classes
+        self.output_dim = PARAMETERS.OBJECT_NUM
+        self.batch_size = 1
+        self.real_batch_size = float(PARAMETERS.BATCH_SIZE)
+        self.all_glances= PARAMETERS.GLANCES
+        self.sensor_size = 256
+        self.core_net = PARAMETERS.CORE_NET
+
+
+        # Learning
+        self.optimizer = PARAMETERS.OPTIMIZER
+        self.momentum = PARAMETERS.MOMENTUM
+
+        self.glimpses_list = []
+        self.state_1 = []
 
         # Size of Hidden state
         self.hs_size = PARAMETERS.HIDDEN_STATE
         self.hn_size = PARAMETERS.HAPTIC_NET
+        self.location_weight = PARAMETERS.LOCATION_WEIGHT
 
-        self.eval_location_list = []
-        self.location_list = []
-        self.location_mean_list = []
-        self.location_stddev_list = []
-        self.glances_list = []
+        # If random_locs --> True, Random Location Policy is used
+        self.random_locs = tensorflow.placeholder(tensorflow.bool, shape=[])
 
-        # Initialize weights
-        self.h_location_std_out_x = tf.keras.layers.Dense(1,
-                activation='tanh',
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        self.h_location_out_x = tf.keras.layers.Dense(1,
-                activation='tanh',
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        self.h_location_std_out_a = tf.keras.layers.Dense(1,
-                activation='sigmoid',
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        self.h_location_out_a = tf.keras.layers.Dense(1,
-                activation='sigmoid',
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
+        self.learning_rate = tensorflow.placeholder(tensorflow.float32, shape=[])
 
-        # glance Net
-        self.h_glance_layer = tf.keras.layers.Dense(hg_size, activation='relu',
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        self.h_location_layer = tf.keras.layers.Dense(hl_size, activation='relu',
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        self.h_glance_layer_sum = tf.keras.layers.Dense(g_size,
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        self.h_location_layer_sum = tf.keras.layers.Dense(g_size,
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        self.h_glance_concat_1 = tf.keras.layers.Dense(g_size, activation='relu',
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        self.h_glance_concat_2 = tf.keras.layers.Dense(g_size, activation='relu',
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
+        # Initialize weights of location network
+        self.h_l_out_x = tf.keras.layers.Dense(1, activation='tanh', kernel_initializer = tf.keras.initializers.HeNormal())
+        self.h_l_std_out_x = tf.keras.layers.Dense(1, activation='tanh', kernel_initializer = tf.keras.initializers.HeNormal())
+        self.h_l_out_a = tf.keras.layers.Dense(1, activation='tanh', kernel_initializer = tf.keras.initializers.HeNormal())
+        self.h_l_std_out_a = tf.keras.layers.Dense(1, activation='tanh', kernel_initializer = tf.keras.initializers.HeNormal())
+        self.b_l_out = tf.keras.layers.Dense(1, kernel_initializer = tf.keras.initializers.HeNormal())
 
-    def reset_lists(self):
-        self.eval_location_list = []
-        self.location_x_list = []
-        self.location_x_mean_list = []
-        self.location_x_stddev_list = []
-        self.location_a_list = []
-        self.location_a_mean_list = []
-        self.location_a_stddev_list = []
-        self.glances_list = []
-        self.first_glance = True
+        # Initialize weights of action network
+        self.a_h_out = tf.keras.layers.Dense(self.output_dim,
+                activation=tf.nn.log_softmax,
+                kernel_initializer = tf.keras.initializers.HeNormal())
 
-    def get_lists(self):
-        return self.eval_location_list, self.location_list, self.location_mean_list, self.location_stddev_list, self.glances_list
+        # Initialize weights of glimpse network
+        self.glimpse_hg = self.weight_variable((self.sensor_size,self.hn_size))
+        self.l_hl = tf.keras.layers.Dense(2, activation='relu', kernel_initializer = tf.keras.initializers.HeNormal())
+        self.hg_g = tf.keras.layers.Dense(self.hn_size, activation='relu', kernel_initializer = tf.keras.initializers.HeNormal())
+        self.hl_g = tf.keras.layers.Dense(self.hn_size, activation='relu', kernel_initializer = tf.keras.initializers.HeNormal())
+        self.hn_1 = tf.keras.layers.Dense(self.hs_size, activation='relu', kernel_initializer = tf.keras.initializers.HeNormal())
 
-    def call(self, inputs, output):
-        glance = self.Haptic_Net(inputs, loc)
+        # For concatenation
+        self.hg_1 = tf.keras.layers.Dense(self.hn_size + self.hn_size, activation='relu', kernel_initializer = tf.keras.initializers.HeNormal())
+        self.hg_2 = tf.keras.layers.Dense(self.hs_size, activation='relu', kernel_initializer = tf.keras.initializers.HeNormal())
+
+        # Create LSTM Cell
+        self.lstm_cell_1 = tf.keras.layers.LSTMCell(self, activation='relu')
+
+    #    # Initial Generation of the sensor Location and initialization of the LSTM
+    #    self.initial_loc_x, self.initial_loc_a, self.initial_mean_x, self.initial_mean_a, self.initial_std_x, \
+    #    self.initial_std_a, self.init_state_1 = self.initial_touch()
+
+    #    # Execute a glance
+    #    self.loc_x, self.loc_a, self.mean_x, self.mean_a, self.std_x, self.std_a, self.state_1, \
+    #    self.predicted_probs, baseline = self.glance(scope)
+
+    #    # Compute the Loss
+    #    self.cost_a, self.cost_l, self.cost_s, self.cost_b, self.reward, \
+    #    all_grads = self.loss(baseline, self.mean_x, self.mean_a, self.std_x, self.std_a, scope)
+
+    #    # Train
+    #    self.train(all_grads, scope)
+
+    #    # Compute number of trainable variables
+    #    self.all_trainable_vars = tensorflow.reduce_sum(
+    #            [tensorflow.reduce_prod(v.shape) for v in tensorflow.trainable_variables()])
+
+
+    def train(self, all_grads, scope):
+        """
+        Training the model by manually accumulate the computed
+        gradients of the last glance for all samples of the current batch
+        :param all_grads: the list of computed gradients
+        :param scope: used variable scope
+        :return:
+        """
+        # Choose Optimizer
+        if self.optimizer == "rmsprop":
+            trainer = tensorflow.train.RMSPropOptimizer(learning_rate=self.learning_rate)
+        elif self.optimizer == "adam":
+            trainer = tensorflow.train.AdamOptimizer(learning_rate=self.learning_rate)
+        elif self.optimizer == "adadelta":
+            trainer = tensorflow.train.AdadeltaOptimizer(learning_rate=self.learning_rate)
+        elif self.optimizer == 'sgd':
+            trainer = tensorflow.train.MomentumOptimizer(learning_rate=self.learning_rate, momentum=self.momentum, use_nesterov=True)
+        else:
+            raise ValueError("unrecognized update: {}".format(self.optimizer))
+
+        local_vars = tensorflow.get_collection(tensorflow.GraphKeys.TRAINABLE_VARIABLES, scope)
+        self.accum_vars = [tensorflow.Variable(tensorflow.zeros_like(tv.initialized_value()), trainable=False) for tv in local_vars]
+        self.zero_ops = [tv.assign(tensorflow.zeros_like(tv)) for tv in self.accum_vars]
+
+        # Apply local gradients to global network
+        ## Adds to each element from the list you initialized earlier with zeros its gradient
+        # (works because accum_vars and gvs are in the same order)
+
+        limit = tensorflow.equal(self.glances, self.all_glances-1)
+        #limit = tensorflow.Print(limit, [limit])
+        self.accum_ops = tensorflow.cond(limit,
+                                         lambda: [[self.accum_vars[i].assign_add(gv) for i, gv in enumerate(grads)]
+                                                  for grads in all_grads], lambda: [[0. for i, gv in enumerate(grads)]
+                                                                                    for grads in all_grads])
+        self.apply_grads = trainer.apply_gradients(zip(self.accum_vars, local_vars))
+
+    def weight_variable(self,shape, name=None):
+        """
+        Trainable network weights are initialized with uniform
+        value within the range [-0.01, 0.01]
+        he_uniform initialization
+        References:
+            He et al., http://arxiv.org/abs/1502.01852
+        :param shape: Desired shape
+        :return: Tensorflow variable
+        """
+        limit = tensorflow.sqrt(6. / tensorflow.cast(tensorflow.maximum(0, shape[0]), tensorflow.float32))
+        if name is None:
+            initial = tensorflow.random_uniform(shape, minval=-limit, maxval=limit)
+        else:
+            initial = tensorflow.random_uniform(shape, minval=-limit, maxval=limit, name = name)
+        return tensorflow.Variable(initial)
+
+    def initial_touch(self):
+        """
+        Initialize the variables and generate
+        a first location-orientation pair for the sensor
+        :return: the generated means, standard deviations, sampled location, sampled orientation
+        and the initialized internal state of the LSTM
+        """
+        initial_state_1 = self.lstm_cell_1.zero_state(self.batch_size, tensorflow.float32)
+        # Initial location mean generated by initial hidden state of RNN
+        mean_x = tensorflow.random_uniform((self.batch_size,1), minval=-1., maxval=1.)
+        std_x = tensorflow.random_uniform((self.batch_size, 1), minval=0., maxval=1.)
+        mean_a = tensorflow.random_uniform((self.batch_size,1), minval=-1., maxval=1.)
+        std_a = tensorflow.random_uniform((self.batch_size, 1), minval=0., maxval=1.)
+        loc_a = mean_a + tensorflow.random_normal(mean_a.get_shape(), 0, std_a)
+        loc_x = mean_x + tensorflow.random_normal(mean_x.get_shape(), 0, std_x)
+        return loc_x, loc_a, mean_x, mean_a, std_x, std_a, initial_state_1
+
+    def glance(self, scope):
+        """
+        The function for computing one single glance
+        :param scope: the used variable scope
+        :return: the generated means, standard deviations, sampled location, sampled orientation
+        the predicted log_softmax output and the baseline
+        """
+        pressure = self.input_pressure
+        loc = self.input_location
+        h_feedback = self.Haptic_Net(pressure, loc)
+        state_1 = self.input_hs_1
+
+        if self.core_net == "MLP":
+            output_1 = tensorflow.nn.relu(tensorflow.matmul(h_feedback, self.hn_1))
+        elif self.core_net == "LSTM":
+            state_1 = tensorflow.nn.rnn_cell.LSTMStateTuple(state_1[0], state_1[1])
+            output_1, state_1 = self.lstm_cell_1(h_feedback, state_1)
+        else:
+            import sys
+            print("Wrong option for core network: {}".format(self.core_net))
+            sys.exit(0)
+
         # Location mean generated by initial hidden state of RNN
         mean_x = tensorflow.cond(self.random_locs,
                                  lambda: tensorflow.random_uniform((self.batch_size,1), minval=-1., maxval=1.),
-                                 lambda: self.h_location_out_x(output)
+                                 lambda: tensorflow.nn.tanh(tensorflow.matmul(output_1, self.h_l_out_x)))
         mean_a = tensorflow.cond(self.random_locs,
                                  lambda: tensorflow.random_uniform((self.batch_size,1), minval=-1., maxval=1.),
                                  lambda: tensorflow.nn.tanh(tensorflow.matmul(output_1, self.h_l_out_a)))
@@ -81,20 +198,98 @@ class AttentionControl(tf.keras.layers.Layer):
         loc_a = mean_a + tensorflow.random_normal(mean_a.get_shape(), 0, std_a)
         loc_x = mean_x + tensorflow.random_normal(mean_x.get_shape(), 0, std_x)
 
-        # Prevent nan
-        loc_a = tf.where(tf.math.is_nan(loc_a), tf.zeros_like(loc_a), loc_a)
-        loc_x = tf.where(tf.math.is_nan(loc_x), tf.zeros_like(loc_x), loc_x)
+        # look at ONLY THE END of the sequence to predict label
+        action_out = tensorflow.nn.log_softmax(
+            tensorflow.matmul(tensorflow.reshape(output_1, (self.batch_size, self.hs_size)), self.a_h_out))
+
+        baseline = tensorflow.matmul(tensorflow.reshape(output_1, (self.batch_size, self.hs_size)), self.b_l_out)
+
+        return loc_x, loc_a, mean_x, mean_a, std_x, std_a, state_1, action_out, baseline
 
 
-        # Append stuff to lists
-        self.location_x_mean_list.append(mean_x)
-        self.location_x_stddev_list.append(std_x)
-        self.location_x_list.append(loc_x)
-        self.location_a_mean_list.append(mean_a)
-        self.location_a_stddev_list.append(std_a)
-        self.location_a_list.append(loc_a)
+    def loss(self, baseline, mean_x, mean_a, std_x, std_a, scope):
+        """
+        Compute the loss functions and the reward
+        :param baseline: predicted baseline
+        :param mean_x: the generated mean of the location Gaussian
+        :param mean_a: the generated mean of the orientation Gaussian
+        :param std_x: the generated standard deviation of the location Gaussian
+        :param std_a: the generated standard deviation of the location Gaussian
+        :param scope: the used variable scope
+        :return: the individual parts of the loss,
+         the computed reward and a list of all non-zero gradients
+        """
 
-        return loc_x, loc_a, mean_x, mean_a, std_x, std_a
+        # look at ONLY THE END of the sequence to predict label
+        correct_y = tensorflow.cast(self.actions, tensorflow.int64)
+
+        max_p_y = tensorflow.argmax(self.predicted_probs, axis=-1)
+        R_max= tensorflow.cast(tensorflow.equal(max_p_y, correct_y), tensorflow.float32)
+        R_max = tensorflow.stop_gradient(R_max)
+        R = tensorflow.reshape(R_max,[self.batch_size,1])
+
+        # reward per example
+        # mean reward
+        reward = tensorflow.reduce_mean(R_max)
+
+        # REINFORCE algorithm for policy network loss
+        # -------
+        # Williams, Ronald J. "Simple statistical gradient-following
+        # algorithms for connectionist reinforcement learning."
+        # Machine learning 8.3-4 (1992): 229-256.
+        # -------
+        # characteristic eligibility taken from sec 6. p.237-239
+        #
+        # For mean:
+        #
+        # d ln(f(m,s,x))   (x - m)
+        # -------------- = -------- with m = mean, x = sample, s = standard deviation
+        #       d m          s**2
+        #
+        # For standard deviation:
+        #
+        # d ln(f(m,s,x))   (x - m)**2 - s**2
+        # -------------- = ------------------ with m = mean, x = sample, s = standard deviation
+        #       d s               s**3
+        #
+
+        b_ng = tensorflow.stop_gradient(baseline)
+
+        # The Loss is computed on the data of the locations/orientations of the "previous step"!
+        # They are just inputs and not computed by the network.
+        # In order to assure that the loss is nevertheless piped backwards correctly, the new computed locatuions/orientations are added and multiplied with 0
+        # like + tensorflow.concat([mean_x, mean_a], axis=-1) * 0
+
+        Reinforce = (self.input_location - tensorflow.concat([self.input_mean_x, self.input_mean_a], axis=-1))/(tensorflow.concat([self.input_std_x, self.input_std_a], axis=-1)**2)\
+                    * (R-b_ng) \
+                    + tensorflow.concat([mean_x, mean_a], axis=-1) * 0
+        Reinforce_std = (((self.input_location - tensorflow.concat([self.input_mean_x, self.input_mean_a], axis=-1))**2)-tensorflow.concat([self.input_std_x, self.input_std_a], axis=-1)**2)/(tensorflow.concat([self.input_std_x, self.input_std_a], axis=-1)**3) \
+                        * (R-b_ng)+ tensorflow.concat([std_x,std_a], axis=-1) * 0
+        Reinforce = tensorflow.reduce_sum(Reinforce, axis=-1)
+        Reinforce_std = tensorflow.reduce_sum(Reinforce_std, axis=-1)
+
+        J = tensorflow.reduce_sum(self.predicted_probs * self.actions_onehot, axis=1)
+
+        # Hybrid Loss
+        # balances the scale of the two gradient components
+        cost = - tensorflow.reduce_mean(J + self.location_weight * (Reinforce + Reinforce_std), axis=0)# * (R[-1]-b_ng[-1])
+        cost_R = - tensorflow.reduce_mean(J, axis=0)
+
+        cost = tensorflow.cond(self.random_locs, lambda: cost_R, lambda: cost)
+
+        # Baseline is trained with MSE
+        b_loss = (tensorflow.losses.mean_squared_error(R, baseline) + self.loss_list_b)
+        b_loss = tensorflow.cond(self.random_locs, lambda: tensorflow.constant(0., shape=b_loss.get_shape(),dtype=tensorflow.float32), lambda: b_loss)
+
+        local_vars = tensorflow.get_collection(tensorflow.GraphKeys.TRAINABLE_VARIABLES, scope)
+        # TODO: Implement gradient clipping
+        all_grads = []
+        all_grads_no_zero = []
+        all_grads.append(tensorflow.gradients(cost, local_vars))
+        all_grads.append(tensorflow.gradients(b_loss/self.glances, local_vars))
+        for grads in all_grads:
+           all_grads_no_zero.append([grad if grad is not None else tensorflow.zeros_like(var) for var, grad in zip(local_vars, grads)])
+        return cost, Reinforce, Reinforce_std, b_loss, reward, all_grads_no_zero
 
     def Haptic_Net(self, pressure, loc):
         """
@@ -105,261 +300,13 @@ class AttentionControl(tf.keras.layers.Layer):
         :return: a feature vector
         """
 
-        # Get glances
-        glances = self.glanceSensor(location, inputs)
-        # Append glances to list for tensorboard summary
-        self.glances_list.append(glances[0])
+        # Process pressure
+        hg = tensorflow.nn.relu(tensorflow.matmul(pressure, self.glimpse_hg))
+        # Process locations
+        hl = tensorflow.nn.relu(tensorflow.matmul(loc, self.l_hl))
+        #Combine the glimpses via concatenation
+        concat = tensorflow.concat([hg,hl], axis=-1)
+        g_1 = tensorflow.nn.relu(tensorflow.matmul(concat, self.hg_1))
+        g = tensorflow.nn.relu(tensorflow.matmul(g_1, self.hg_2))
 
-        # Process glances
-        glances = tf.reshape(glances, [self.batch_size, self.totalSensorBandwidth])
-        hg = self.h_glance_layer(glances)
-
-        # # Process locations
-        hl = self.h_location_layer(location)
-
-        # # Combine glances and locations
-        concat = tensorflow.concat([self.h_glance_layer_sum(hg), self.h_location_layer_sum(hl)], axis=-1)
-        g_1 = self.h_glance_concat_1(concat)
-        g = self.h_glance_concat_1(g_1)
         return g
-
-    def glanceSensor(self, normLoc, inputs):
-        """
-        Compute glances
-        :param normLoc: Location for the next glances
-        :return: glances
-        """
-        # Convert location [-1,1] into MNIST Coordinates:
-        loc = tf.round(((normLoc + 1.) / 2.) * self.mnist_size)
-        loc = tf.cast(loc, tf.int32)
-
-
-        zooms = []
-
-        # process each image individually
-        for k in range(self.batch_size):
-            imgZooms = []
-            one_img = inputs[k,:,:,:]
-            offset = self.sensorBandwidth* (self.pixel_scaling ** (self.depth-1))
-
-            offset = tf.cast(offset, tf.int32)
-            # pad image with zeros
-            one_img = tf.image.pad_to_bounding_box(one_img, offset, offset, \
-                                                   2*offset + self.mnist_size, 2*offset + self.mnist_size)
-
-            # compute the different depth images
-            for i in range(self.depth):
-
-                # width/height of the next glance
-                d = tf.cast(self.sensorBandwidth * (self.pixel_scaling ** i), tf.int32)
-                r = d//2
-
-                # get mean location
-                loc_k = loc[k,:]
-                adjusted_loc = offset + loc_k - r
-
-                one_img2 = tf.reshape(one_img, (one_img.get_shape()[0], \
-                                                 one_img.get_shape()[1]))
-
-                # crop image to (d x d)
-                zoom = tf.slice(one_img2, adjusted_loc, [d,d])
-                if i > 0:
-                    zoom = tf.reshape(zoom, (1, d, d, 1))
-                    zoom = tf.image.resize(zoom, (self.sensorBandwidth, self.sensorBandwidth))
-                    zoom = tf.reshape(zoom, (self.sensorBandwidth, self.sensorBandwidth))
-
-                imgZooms.append(zoom)
-            zooms.append(tf.stack(imgZooms))
-        zooms = tf.stack(zooms)
-        return zooms
-
-
-class Baseline(tf.keras.Model):
-    def __init__(self, units, batch_size):
-        super(Baseline, self).__init__()
-        self.batch_size = batch_size
-        self.units = units
-
-        self.input_placeholder = tf.keras.layers.InputLayer(input_shape=([batch_size, 256]))
-        # baseline
-        self.baseline_layer = tf.keras.layers.Dense(1, kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-    def call(self, outputs):
-
-        # Use mean baseline of all glances
-        b_pred = []
-        for o in outputs:
-            o = tf.reshape(tf.stop_gradient(o), (self.batch_size, self.units))
-            i = self.input_placeholder(o)
-            b_pred.append(tf.squeeze(self.baseline_layer(i)))
-            b = tf.transpose(tf.stack(b_pred),perm=[1,0])
-        return b
-
-
-class RAM(tf.keras.Model):
-    def __init__(self, PARAMETERS):
-        super(RAM, self).__init__()
-
-        # number of classes
-        self.output_dim = PARAMETERS.OBJECT_NUM
-        self.batch_size = 1
-        self.real_batch_size = float(PARAMETERS.BATCH_SIZE)
-        self.all_glances= PARAMETERS.GLANCES
-        self.sensor_size = 256
-        self.core_net = PARAMETERS.CORE_NET
-
-        # Learning
-        self.optimizer = PARAMETERS.OPTIMIZER
-        self.momentum = PARAMETERS.MOMENTUM
-
-        # Size of Hidden state
-        self.hs_size = PARAMETERS.HIDDEN_STATE
-        self.hn_size = PARAMETERS.HAPTIC_NET
-        self.location_weight = PARAMETERS.LOCATION_WEIGHT
-
-        self.inputs_placeholder = tf.keras.layers.InputLayer(input_shape=([batch_size, mnist_size, mnist_size, 1]))
-
-        # Choose kind of memory layer
-        if PARAMETERS.CORE_NET == "MLP":
-            self.memory = tf.keras.layers.Dense(self.hs_size,
-                activation='relu',
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        elif PARAMETERS.CORE_NET == "LSTM":
-            self.memory = tf.keras.layers.LSTMCell(self, activation='relu')
-        else:
-            import sys
-            print("Wrong option for core network: {}".format(PARAMETERS.CORE_NET))
-            sys.exit(0)
-
-        # classification
-        self.classification_layer = tf.keras.layers.Dense(10,
-                activation=tf.nn.log_softmax,
-                kernel_initializer = tf.keras.initializers.RandomUniform(minval=-0.1, maxval=0.1))
-        # used for attention
-        self.attention = AttentionControl(PARAMETERS)
-
-    def reset_attention(self):
-        self.attention.reset_lists()
-
-    def get_attention_lists(self):
-        return self.attention.get_lists()
-
-    def call(self, inputs):
-        outputs = []
-        output = tf.zeros((self.batch_size, self.units))
-        hidden = [output, output]
-
-        self.attention.reset_lists()
-        if self.core_net == "LSTM":
-            self.memory.reset_recurrent_dropout_mask()
-            self.memory.reset_dropout_mask()
-
-        input_layer = self.inputs_placeholder(inputs)
-        for _ in range(self.glances):
-            glance = self.attention(input_layer, output)
-            if self.core_net == "LSTM":
-                output, hidden = self.memory(glance, hidden)
-            else: 
-                output = self.memory(glance)
-            outputs.append(output)
-        # look at ONLY THE END of the sequence to predict label
-        action_out = self.classification_layer(output)
-
-        return glance, action_out, outputs
-
-    def loss(self, correct_y, action_out, baseline):
-        """
-        Get classification and compute losses
-        :param outputs: Sequence of hidden states of the RNN
-        :return: accumulated loss, location policy loss, baseline loss, mean reward, predicted labels,
-         gradient of hybrid loss, gradient of baseline loss
-        """
-
-        max_p_y = tf.argmax(action_out, axis=-1)
-        actions_onehot = tf.one_hot(correct_y, 10)
-        # reward per example
-        R_batch = tf.cast(tf.equal(max_p_y, correct_y), tf.float32)
-        R = tf.reshape(R_batch, (self.batch_size, 1))
-        R = tf.stop_gradient(R)
-        R = tf.tile(R, [1, self.glances])
-
-        # mean reward
-        # reward = tf.reduce_mean(R_batch)
-
-        # REINFORCE algorithm for policy network loss
-        # -------
-        # Williams, Ronald J. "Simple statistical gradient-following
-        # algorithms for connectionist reinforcement learning."
-        # Machine learning 8.3-4 (1992): 229-256.
-        # -------
-        # characteristic eligibility taken from sec 6. p.237-239
-        #
-        # d ln(f(m,s,x))   (x - m)
-        # -------------- = -------- with m = mean, x = sample, s = standard deviation
-        #       d m          s**2
-        #
-
-        #Remove the summation of 2D Location while appending to list and evaluate the characteristic elegibility indiviually for each dimension
-
-        baseline = tf.stop_gradient(baseline)
-        double_baseline = []
-        double_R= []
-        for b in range(len(baseline)):
-            double_baseline.append(baseline[b])
-            double_baseline.append(baseline[b])
-            double_R.append(R[b])
-            double_R.append(R[b])
-        double_baseline = tf.stack(double_baseline)
-        double_R = tf.stack(double_R)
-
-        loc = tf.reshape(tf.stack(self.attention.location_list),
-                    shape=(self.batch_size*2,self.glances))
-        mean_loc = tf.reshape(tf.stack(self.attention.location_mean_list),
-                    shape=(self.batch_size*2,self.glances))
-        std_loc = tf.reshape(tf.stack(self.attention.location_stddev_list),
-                    shape=(self.batch_size*2,self.glances))
-
-        Reinforce = (loc - mean_loc)/std_loc**2 * (double_R - double_baseline)
-        Reinforce_std = (((loc - mean_loc)**2) - std_loc**2)/(std_loc**3) * (double_R - double_baseline)
-
-        Reinforce = tf.reshape([tf.keras.backend.sum(tf.reduce_sum(Reinforce,
-            -1)[i:i+2]) for i in range(0, self.batch_size*2, 2)],
-            shape=(self.batch_size,))
-        Reinforce_std = tf.reshape([tf.keras.backend.sum(tf.reduce_sum(Reinforce_std,
-            -1)[i:i+2]) for i in range(0, self.batch_size*2, 2)],
-            shape=(self.batch_size,))
-        # print("locList: ", self.attention.location_list)
-        # print("locStack: ", tf.reshape(tf.stack(self.attention.location_list),
-        #             shape=(self.batch_size*2,self.glances)))
-
-        # print("R: ", double_R)
-        # print("bL ", double_baseline)
-        # print(Reinforce_std)
-
-        #######################################################################
-        # Optimized for mean -> Also need to change appendance lists in attention layer
-
-        # loc = tf.transpose(tf.stack(self.attention.location_list),perm=[1,0])
-        # mean_loc = tf.transpose(tf.stack(self.attention.location_mean_list),perm=[1,0,])
-        # std_loc = tf.transpose(tf.stack(self.attention.location_stddev_list),perm=[1,0,])
-
-
-        # Reinforce = tf.reduce_mean((loc -
-        #     mean_loc)/std_loc**2 * (R - baseline))
-        # Reinforce_std = tf.reduce_mean((((loc -
-        #     mean_loc)**2)-std_loc**2)/(std_loc**3) *
-        #     (R - baseline))
-        #######################################################################
-
-        # balances the scale of the two gradient components
-        ratio = self.location_weight
-
-        # Action Loss
-        J = tf.reduce_sum(action_out * actions_onehot,axis=1)
-
-        # Hybrid Loss
-        # Scale the learning rate for the REINFORCE part by tf.stop_gradient(std_loc)**2, as suggested in (Williams, 1992)
-        #cost = - tf.reduce_mean(J + ratio * tf.reduce_mean(tf.stop_gradient(std_loc))**2* (Reinforce+Reinforce_std), axis=0)
-        cost = - tf.reduce_mean(J + ratio * (Reinforce+Reinforce_std), axis=0)
-
-
-        return cost, -Reinforce, -Reinforce_std, R
