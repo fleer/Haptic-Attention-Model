@@ -343,6 +343,10 @@ class Learner():
                 state_1, cost_a_fetched, cost_l_fetched, cost_s_fetched, \
                 cost_b_fetched, reward_fetched, prediction_labels_fetched, _ \
                     = self.session.run(feed_dict=feed_dict, fetches=fetches)
+
+                # Reshape b_loss to scalar
+                cost_b_fetched = np.reshape(cost_b_fetched,())
+
                 reward_list[g][index] = reward_fetched
 
                 glance_actions.append(prediction_labels_fetched[0])
@@ -358,8 +362,10 @@ class Learner():
             batch_cost_l.append(cost_l_fetched)
             batch_cost_s.append(cost_s_fetched)
             batch_cost_b.append(cost_b_fetched/(g+1.))
+
+
         # Here, the action training happens by applying the gradients
-        self.session.run(self.ram.apply_grads, feed_dict={self.ram.learning_rate: self.lr})
+#        self.session.run(self.ram.apply_grads, feed_dict={self.ram.learning_rate: self.lr})
 
         return batch_reward, batch_predicted_labels, batch_cost_a, batch_cost_l, batch_cost_s, \
                batch_cost_b, reward_list, accumulated_reward_list/float(self.batch_size)
