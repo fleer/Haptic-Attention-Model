@@ -361,11 +361,11 @@ class Learner():
             batch_cost_a.append(cost_a_fetched)
             batch_cost_l.append(cost_l_fetched)
             batch_cost_s.append(cost_s_fetched)
-            batch_cost_b.append(cost_b_fetched/(g+1.))
+            batch_cost_b.append(cost_b_fetched)
 
 
         # Here, the action training happens by applying the gradients
-#        self.session.run(self.ram.apply_grads, feed_dict={self.ram.learning_rate: self.lr})
+        self.session.run(self.ram.apply_grads, feed_dict={self.ram.learning_rate: self.lr})
 
         return batch_reward, batch_predicted_labels, batch_cost_a, batch_cost_l, batch_cost_s, \
                batch_cost_b, reward_list, accumulated_reward_list/float(self.batch_size)

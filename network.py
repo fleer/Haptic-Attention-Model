@@ -98,10 +98,10 @@ class RAM():
 
             # Compute the Loss
             self.cost_a, self.cost_l, self.cost_s, self.cost_b, self.reward, \
-            self.all_grads = self.loss(baseline, self.mean_x, self.mean_a, self.std_x, self.std_a, scope)
+            all_grads = self.loss(baseline, self.mean_x, self.mean_a, self.std_x, self.std_a, scope)
 
             # Train
-            self.train(self.all_grads, scope)
+            self.train(all_grads, scope)
 
             # Compute number of trainable variables
             self.all_trainable_vars = tf.reduce_sum(
@@ -135,16 +135,14 @@ class RAM():
         # Apply local gradients to global network
         ## Adds to each element from the list you initialized earlier with zeros its gradient
         # (works because accum_vars and gvs are in the same order)
-        
+
         limit = tf.equal(self.glances, self.all_glances-1)
         # limit = tf.compat.v1.Print(limit, [limit])
         self.accum_ops = tf.cond(limit,
              lambda: [[self.accum_vars[i].assign_add(gv) for i, gv in enumerate(grads)]
                       for grads in all_grads], lambda: [[0. for i, gv in enumerate(grads)]
                                                         for grads in all_grads])
-        self.apply_grads = trainer.apply_gradients(zip(self.accum_ops, local_vars))
-        #self.accum_ops = [[self.accum_vars[i].assign_add(gv) for i, gv in enumerate(grads)] for grads in all_grads]
-        #self.apply_grads = trainer.apply_gradients(zip(all_grads, local_vars))
+        self.apply_grads = trainer.apply_gradients(zip(self.accum_vars, local_vars))
 
     def weight_variable(self,shape, name=None):
         """
@@ -308,8 +306,7 @@ class RAM():
         all_grads.append(tf.compat.v1.gradients(cost, local_vars))
         all_grads.append(tf.compat.v1.gradients(b_loss/self.glances, local_vars))
         for grads in all_grads:
-           all_grads_no_zero.append([grad if grad is not None else
-               tf.zeros_like(var) for grad, var in zip(grads, local_vars)])
+           all_grads_no_zero.append([grad if grad is not None else tf.zeros_like(var) for grad, var in zip(grads, local_vars)])
         return cost, Reinforce, Reinforce_std, b_loss, reward, all_grads_no_zero
 
     def Haptic_Net(self, pressure, loc):
