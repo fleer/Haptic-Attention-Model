@@ -48,26 +48,33 @@ class RAM():
         # Global weights
         with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
             # Initialize weights of location network
-            self.h_l_out_x = self.weight_variable((self.hs_size, 1), "m_x")
-            self.h_l_std_out_x = self.weight_variable((self.hs_size, 1), "std_x")
-            self.h_l_out_a = self.weight_variable((self.hs_size, 1), "m_a")
-            self.h_l_std_out_a = self.weight_variable((self.hs_size, 1), "std_a")
-            self.b_l_out = self.weight_variable((self.hs_size, 1))
+            self.h_l_out_x = tf.keras.layers.Dense(1, activation='tanh',
+                    kernel_initializer = tf.keras.initializers.HeNormal(), name= "m_x")
+            self.h_l_std_out_x = tf.keras.layers.Dense(1, activation='sigmoid',
+                    kernel_initializer = tf.keras.initializers.HeNormal(), name= "std_x")
+            self.h_l_out_a = tf.keras.layers.Dense(1, activation='tanh',
+                    kernel_initializer = tf.keras.initializers.HeNormal(), name= "m_a")
+            self.h_l_std_out_a = tf.keras.layers.Dense(1, activation='sigmoid',
+                    kernel_initializer = tf.keras.initializers.HeNormal(), name= "std_a")
+            self.b_l_out = tf.keras.layers.Dense(1, kernel_initializer = tf.keras.initializers.HeNormal())
 
             # Initialize weights of action network
-            self.a_h_out = self.weight_variable((self.hs_size, self.output_dim))
-            self.belief_h_out = self.weight_variable((self.hs_size, 2))
+            self.a_h_out = tf.keras.layers.Dense(self.output_dim, kernel_initializer = tf.keras.initializers.HeNormal())
 
-            # Initialize weights of glimpse network
-            self.glimpse_hg = self.weight_variable((self.sensor_size,self.hn_size))
-            self.l_hl = self.weight_variable((2, self.hn_size))
-            self.hg_g = self.weight_variable((self.hn_size, self.hs_size))
-            self.hl_g = self.weight_variable((self.hn_size, self.hs_size))
-            self.hn_1 = self.weight_variable((self.hs_size,self.hs_size))
+            # Initialize weights of haptic network
+            self.hn_1 = tf.keras.layers.Dense(self.hs_size, activation='relu',
+                    kernel_initializer = tf.keras.initializers.HeNormal())
+
+            self.glimpse_hg = tf.keras.layers.Dense(self.hn_size, activation='relu',
+                    kernel_initializer = tf.keras.initializers.HeNormal())
+            self.l_hl = tf.keras.layers.Dense(self.hs_size, activation='relu',
+                    kernel_initializer = tf.keras.initializers.HeNormal())
 
             # For concatenation
-            self.hg_1 = self.weight_variable((self.hn_size + self.hn_size, self.hs_size))
-            self.hg_2 = self.weight_variable((self.hs_size, self.hs_size))
+            self.hg_1 = tf.keras.layers.Dense(self.hs_size, activation='relu',
+                    kernel_initializer = tf.keras.initializers.HeNormal())
+            self.hg_2 = tf.keras.layers.Dense(self.hs_size, activation='relu',
+                    kernel_initializer = tf.keras.initializers.HeNormal())
 
             # Create LSTM Cell
             self.lstm_cell_1 = tf.keras.layers.LSTMCell(self.hs_size,
@@ -76,8 +83,8 @@ class RAM():
             #         activation="relu", state_is_tuple=True, name="cell_1")
 
             # Tensorflow Placeholder
-            self.actions = tf.compat.v1.placeholder(shape=(self.batch_size,), dtype=tf.int32)
-            self.actions_onehot = tf.compat.v1.one_hot(self.actions, self.output_dim, dtype=tf.float32)
+            self.actions = tf.compat.v1.placeholder(shape=(self.batch_size,), dtype=tf.int64)
+            self.actions_onehot = tf.one_hot(self.actions, self.output_dim, dtype=tf.float32)
             self.input_hs_1 = tf.compat.v1.placeholder(tf.float32, shape=(2, self.batch_size, self.hs_size))
             self.glances = tf.compat.v1.placeholder(shape=(), dtype=tf.float32)
             self.loss_list_b = tf.compat.v1.placeholder(shape=(), dtype=tf.float32)
@@ -144,23 +151,6 @@ class RAM():
                                                         for grads in all_grads])
         self.apply_grads = trainer.apply_gradients(zip(self.accum_vars, local_vars))
 
-    def weight_variable(self,shape, name=None):
-        """
-        Trainable network weights are initialized with uniform
-        value within the range [-0.01, 0.01]
-        he_uniform initialization
-        References:
-            He et al., http://arxiv.org/abs/1502.01852
-        :param shape: Desired shape
-        :return: Tensorflow variable
-        """
-        limit = tf.sqrt(6. / tf.cast(tf.maximum(0, shape[0]), tf.float32))
-        if name is None:
-            initial = tf.random.uniform(shape, minval=-limit, maxval=limit)
-        else:
-            initial = tf.random.uniform(shape, minval=-limit, maxval=limit, name = name)
-        return tf.Variable(initial)
-
     def initial_touch(self):
         """
         Initialize the variables and generate
@@ -191,7 +181,7 @@ class RAM():
         state_1 = self.input_hs_1
 
         if self.core_net == "MLP":
-            output_1 = tf.nn.relu(tf.matmul(h_feedback, self.hn_1))
+            output_1 = self.hn_1(h_feedback)
         elif self.core_net == "LSTM":
             state_1 = tf.compat.v1.nn.rnn_cell.LSTMStateTuple(state_1[0], state_1[1])
             output_1, state_1 = self.lstm_cell_1(h_feedback, state_1)
@@ -202,25 +192,24 @@ class RAM():
 
         # Location mean generated by initial hidden state of RNN
         mean_x = tf.cond(self.random_locs,
-                                 lambda: tf.random.uniform((self.batch_size,1), minval=-1., maxval=1.),
-                                 lambda: tf.nn.tanh(tf.matmul(output_1, self.h_l_out_x)))
+                                lambda: tf.random.uniform((self.batch_size,1), minval=-1., maxval=1.),
+                                lambda: self.h_l_out_x(output_1))
         mean_a = tf.cond(self.random_locs,
-                                 lambda: tf.random.uniform((self.batch_size,1), minval=-1., maxval=1.),
-                                 lambda: tf.nn.tanh(tf.matmul(output_1, self.h_l_out_a)))
+                                lambda: tf.random.uniform((self.batch_size,1), minval=-1., maxval=1.),
+                                lambda: self.h_l_out_a(output_1))
         std_x = tf.cond(self.random_locs,
                                 lambda: tf.random.uniform((self.batch_size,1), minval=0., maxval=1.),
-                                lambda: tf.nn.sigmoid(tf.matmul(output_1, self.h_l_std_out_x)))
+                                lambda: self.h_l_std_out_x(output_1))
         std_a = tf.cond(self.random_locs,
                                 lambda: tf.random.uniform((self.batch_size,1), minval=0., maxval=1.),
-                                lambda: tf.nn.sigmoid(tf.matmul(output_1, self.h_l_std_out_a)))
+                                lambda: self.h_l_std_out_a(output_1))
         loc_a = mean_a + tf.random.normal(mean_a.get_shape(), 0, std_a)
         loc_x = mean_x + tf.random.normal(mean_x.get_shape(), 0, std_x)
 
         # look at ONLY THE END of the sequence to predict label
-        action_out = tf.nn.log_softmax(
-            tf.matmul(tf.reshape(output_1, (self.batch_size, self.hs_size)), self.a_h_out))
+        action_out = tf.nn.log_softmax(self.a_h_out(tf.reshape(output_1, (self.batch_size, self.hs_size))))
 
-        baseline = tf.matmul(tf.reshape(output_1, (self.batch_size, self.hs_size)), self.b_l_out)
+        baseline = self.b_l_out(tf.reshape(output_1, (self.batch_size, self.hs_size)))
 
         return loc_x, loc_a, mean_x, mean_a, std_x, std_a, state_1, action_out, baseline
 
@@ -239,10 +228,9 @@ class RAM():
         """
 
         # look at ONLY THE END of the sequence to predict label
-        correct_y = tf.cast(self.actions, tf.int64)
 
         max_p_y = tf.argmax(self.predicted_probs, axis=-1)
-        R_max= tf.cast(tf.equal(max_p_y, correct_y), tf.float32)
+        R_max= tf.cast(tf.equal(max_p_y, self.actions), tf.float32)
         R_max = tf.stop_gradient(R_max)
         R = tf.reshape(R_max,[self.batch_size,1])
 
@@ -319,12 +307,12 @@ class RAM():
         """
 
         # Process pressure
-        hg = tf.nn.relu(tf.matmul(pressure, self.glimpse_hg))
+        hg = self.glimpse_hg(pressure)
         # Process locations
-        hl = tf.nn.relu(tf.matmul(loc, self.l_hl))
+        hl = self.l_hl(loc)
         #Combine the glimpses via concatenation
         concat = tf.concat([hg,hl], axis=-1)
-        g_1 = tf.nn.relu(tf.matmul(concat, self.hg_1))
-        g = tf.nn.relu(tf.matmul(g_1, self.hg_2))
+        g_1 = self.hg_1(concat)
+        g = self.hg_2(g_1)
 
         return g
